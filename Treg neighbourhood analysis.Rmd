@@ -1,0 +1,103 @@
+---
+title: "Treg neighbourhood analysis"
+output: html_notebook
+---
+
+#written by Dr. Harikesh S. Wong in R version 3.5.2 
+#2020-07-15: this script determines the local clustering and phenotype of Tregs around individual activated Tconv cells and the local clustering of activated Tconv around other activated Tconv. A sample data set is included
+
+#load packages and read in relevant .csv files
+```{r}
+library(ggplot2)
+library(spatstat)
+library(viridis)
+library(tidyverse)
+
+#import sample data taken from a female 6 week old WT NOD mouse
+WT_CD4 <- read.csv("CD4 Tconvs.csv")
+WT_Tregs <- read.csv("Tregs.csv")
+WT_PD1 <- filter(WT_CD4, PD1>180)        #filter for cells expressing high PD-1
+```
+
+#create .pp3 spatial point patterns and calculate distances
+```{r}
+WT_Tregs.pp3 <- pp3(WT_Tregs[,6],WT_Tregs[,7],WT_Tregs[,8],range(WT_Tregs[,6]),range(WT_Tregs[,7]),range(WT_Tregs[,8]),
+                    marks=WT_Tregs$CD25) 
+WT_PD1.pp3 <- pp3(WT_PD1[,6],WT_PD1[,7],WT_PD1[,8],range(WT_Tregs[,6]),range(WT_Tregs[,7]),range(WT_Tregs[,8]),
+                  marks=WT_PD1$CD25) 
+
+#Calculate 3D cross distances between each CD4+ PD-1+ Tconv and every Treg 
+WT_dist <- (crossdist.pp3(WT_PD1.pp3,WT_Tregs.pp3))%>% 
+  t()%>%
+  as.data.frame()
+
+#Calculate 3D pairwise distances between every CD4+ PD-1+ Tconv  
+WT_PD1_pd <- pairdist.pp3(WT_PD1.pp3)
+
+cutoff <- 50 #user selected parameter - distance cutoff in micrometers
+
+WT_dist_list <- list()
+
+#for each CD4+ PD-1+ Tconv, determine whether each Treg falls within distance cutoff
+i=1
+for(i in 1:length(WT_dist)) {
+  WT_dist_list[[i]] <- which(WT_dist[,i]<= cutoff)
+}
+
+#for each CD4+ PD-1+ Tconv, determine the total number of Tregs and other CD4+ PD-1+ Tconvs within the distance cutoff
+WC_WT <- as.data.frame(apply(t(WT_dist), 1, function(x) {sum(x<=cutoff)}))
+  colnames(WC_WT) <- c("#Tregs_within_cutoff")
+
+WC_WT_PD1 <- as.data.frame(apply((WT_PD1_pd), 1, function(x) {sum(x<=cutoff)}))
+  colnames(WC_WT_PD1) <- c("PD1")
+```
+
+#extract the measured parameters from the Tregs that fall within the cutoff
+```{r}
+#add an indexing column to identify invidual Tregs
+WT_Tregs <- mutate(WT_Tregs,
+                   index = seq(from=1,to=nrow(WT_Tregs),by=1)
+)
+
+WT_nr <- list()
+
+i=1
+for(i in 1:length(WT_dist)) {
+  WT_nr[[i]] <- as.data.frame(filter(WT_Tregs,WT_Tregs$index %in% WT_dist_list[[i]])) 
+}
+
+#For each CD4+ PD1+ Tconv, calculate the median parameter values of surrounding Tregs within the distance cutoff
+WT_nr_summary <- lapply(WT_nr, function(x) apply(subset(x, select = c(pSTAT5, Foxp3,CD25,PD1)),2, FUN=median))
+
+WT_nr_res <- data.frame()
+i=1
+for(i in 1:length(WT_dist)) {
+  WT_nr_res <- rbind(WT_nr_res,t(WT_nr_summary[[i]]))
+}
+
+#calculate the IL-2RA (CD25) expression ratio between each individual CD4+ PD1+ Tconv and surrounding Tregs within distance cutoff
+WT_nr_res <- WT_nr_res%>%
+ mutate(Tconv_CD25 = WT_PD1$CD25,
+        TTconv_Treg_ratio = Tconv_CD25/CD25)
+```
+
+#plot data using ggplot
+```{r}
+#summary
+WT_overall <- as.data.frame(cbind(WC_WT$`#Tregs_within_cutoff`,
+                                  WC_WT_PD1$PD1,WT_nr_res$TTconv_Treg_ratio))
+colnames(WT_overall) <-c("Tregs","CD4PD1", "Tconv_Treg_CD25")
+
+ggplot(WT_overall)+
+  stat_density2d(aes(x=Tregs,y=CD4PD1,colour=stat(level)),alpha=0.9,h=c(12,12))+
+  scale_color_viridis(option="C",alpha=0.9)+ #include limits to standardize the scale across conditions
+  ylim(-10,100)+xlim(0,160)+coord_fixed()+
+  theme_bw()+theme(legend.position="none",axis.ticks.length=unit(0.3,"cm"))
+
+ggplot(WT_overall)+
+  ylim(-10,100)+xlim(0,160)+coord_fixed()+
+  geom_point(aes(x=Tregs,y=CD4PD1,colour=Tconv_Treg_CD25),size=2.5)+
+  scale_color_viridis(limits=c(0,1.5),alpha=0.9)+
+  theme_bw()+theme(legend.position="none",axis.ticks.length=unit(0.3,"cm"))
+```
+
